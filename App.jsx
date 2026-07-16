@@ -65,6 +65,11 @@ function fmtMinsUntil(mins) {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
+function toDatetimeLocalValue(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function parseTimeOnDate(timeStr, baseDate) {
   if (!timeStr) return null;
   const m = timeStr.trim().match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM|am|pm)/);
@@ -120,8 +125,11 @@ export default function FerryTracker() {
   const [live, setLive] = useState({ status: 'idle', departures: [], note: '', checkedAt: null });
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [route, setRoute] = useState({ status: 'idle', coords: [], distanceKm: null, durationMin: null });
+  const [customTime, setCustomTime] = useState(null); // null = live "now"; otherwise a chosen planning Date
+  const [showTimePicker, setShowTimePicker] = useState(false);
 
   const effectiveDirection = direction || autoDirection;
+  const effectiveNow = customTime || now;
 
   // Clock tick
   useEffect(() => {
@@ -227,7 +235,7 @@ export default function FerryTracker() {
   // Claude's built-in API proxy, which only exists inside Claude.ai artifacts.
   // With no ANTHROPIC_API_KEY configured server-side, that endpoint just
   // returns no departures, and this falls back to the approximate schedule below.
-  const fetchLive = useCallback(async (dir) => {
+  const fetchLive = useCallback(async (dir, referenceTime) => {
     setLive((prev) => ({ ...prev, status: 'loading' }));
     try {
       const originT = dir === 'toRussell' ? TERMINALS.redland : TERMINALS.russell;
@@ -238,7 +246,7 @@ export default function FerryTracker() {
         body: JSON.stringify({
           originName: originT.full,
           destName: destT.full,
-          nowISO: new Date().toISOString(),
+          nowISO: (referenceTime || new Date()).toISOString(),
         }),
       });
       if (!res.ok) throw new Error('live endpoint unavailable');
@@ -254,26 +262,26 @@ export default function FerryTracker() {
   }, []);
 
   useEffect(() => {
-    fetchLive(effectiveDirection);
+    fetchLive(effectiveDirection, customTime);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveDirection]);
+  }, [effectiveDirection, customTime]);
 
   const usingFallback = live.status !== 'success';
   let displayDepartures = [];
   if (!usingFallback) {
     displayDepartures = live.departures
       .map((s) => {
-        const d = parseTimeOnDate(s, now);
-        if (d && d < now) d.setDate(d.getDate() + 1);
+        const d = parseTimeOnDate(s, effectiveNow);
+        if (d && d < effectiveNow) d.setDate(d.getDate() + 1);
         return d;
       })
       .filter(Boolean)
       .sort((a, b) => a - b);
   }
   if (displayDepartures.length === 0) {
-    let sched = approxSchedule(now).filter((d) => d > now);
+    let sched = approxSchedule(effectiveNow).filter((d) => d > effectiveNow);
     if (sched.length < 4) {
-      const tomorrow = new Date(now);
+      const tomorrow = new Date(effectiveNow);
       tomorrow.setDate(tomorrow.getDate() + 1);
       sched = sched.concat(approxSchedule(tomorrow));
     }
@@ -281,7 +289,7 @@ export default function FerryTracker() {
   }
 
   const nextDep = displayDepartures[0] || null;
-  const minsUntilNext = nextDep ? Math.round((nextDep - now) / 60000) : null;
+  const minsUntilNext = nextDep ? Math.round((nextDep - effectiveNow) / 60000) : null;
   const leaveBy =
     nextDep && driveMin != null ? new Date(nextDep.getTime() - (driveMin + BOARD_BUFFER_MIN) * 60000) : null;
   const leaveByPast = leaveBy && leaveBy <= now;
@@ -301,6 +309,12 @@ export default function FerryTracker() {
         .locate-btn { background:rgba(245,238,220,0.08); border:1px solid rgba(245,238,220,0.14); color:#F5EEDC; padding:6px; border-radius:8px; cursor:pointer; display:flex; }
         .locate-btn:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
         .direction-toggle { display:flex; gap:6px; margin-bottom:14px; background:rgba(245,238,220,0.06); padding:4px; border-radius:12px; }
+        .time-row { display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+        .time-chip { display:flex; align-items:center; gap:5px; background:rgba(245,238,220,0.07); border:1px solid rgba(245,238,220,0.14); color:#9DBFB9; font-family:inherit; font-size:11.5px; font-weight:700; padding:6px 10px; border-radius:99px; cursor:pointer; }
+        .time-chip.active { background:rgba(240,130,74,0.14); border-color:rgba(240,130,74,0.4); color:#F0824A; }
+        .time-chip:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
+        .time-input { background:#0B2B30; border:1px solid rgba(245,238,220,0.2); color:#F5EEDC; font-family:inherit; font-size:12px; font-weight:600; padding:6px 8px; border-radius:8px; }
+        .time-input:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
         .dir-btn { flex:1; border:none; background:transparent; color:#9DBFB9; font-family:inherit; font-size:12px; font-weight:700; padding:9px 4px; border-radius:9px; cursor:pointer; }
         .dir-btn .arrow { opacity:0.55; margin:0 2px; }
         .dir-btn.active { background:#123B41; color:#F5EEDC; box-shadow:0 1px 0 rgba(245,238,220,0.08) inset; }
@@ -406,6 +420,46 @@ export default function FerryTracker() {
           >
             Redland Bay <span className="arrow">→</span> Russell
           </button>
+        </div>
+
+        <div className="time-row">
+          <button className={`time-chip ${customTime ? 'active' : ''}`} onClick={() => setShowTimePicker((v) => !v)}>
+            <Clock size={12} />
+            {customTime
+              ? customTime.toLocaleString('en-AU', {
+                  weekday: 'short',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                  hour12: true,
+                })
+              : 'Planning for now'}
+          </button>
+          {customTime && (
+            <button
+              className="link-btn"
+              onClick={() => {
+                setCustomTime(null);
+                setShowTimePicker(false);
+              }}
+            >
+              back to now
+            </button>
+          )}
+          {showTimePicker && (
+            <input
+              type="datetime-local"
+              className="time-input"
+              autoFocus
+              defaultValue={toDatetimeLocalValue(customTime || now)}
+              onChange={(e) => {
+                if (e.target.value) {
+                  setCustomTime(new Date(e.target.value));
+                  setShowTimePicker(false);
+                }
+              }}
+              onBlur={() => setShowTimePicker(false)}
+            />
+          )}
         </div>
 
         <section className="hero" aria-live="polite">
@@ -533,7 +587,7 @@ export default function FerryTracker() {
           <div className="footer-row">
             <button
               className="refresh-btn"
-              onClick={() => fetchLive(effectiveDirection)}
+              onClick={() => fetchLive(effectiveDirection, customTime)}
               disabled={live.status === 'loading'}
             >
               <RefreshCw size={13} className={live.status === 'loading' ? 'spin' : ''} />
