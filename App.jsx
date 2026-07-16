@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Anchor, MapPin, Clock, RefreshCw, ExternalLink, Navigation, AlertTriangle } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -119,6 +119,7 @@ export default function FerryTracker() {
   const [autoDirection, setAutoDirection] = useState('toRedland');
   const [live, setLive] = useState({ status: 'idle', departures: [], note: '', checkedAt: null });
   const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const [route, setRoute] = useState({ status: 'idle', coords: [], distanceKm: null, durationMin: null });
 
   const effectiveDirection = direction || autoDirection;
 
@@ -180,7 +181,47 @@ export default function FerryTracker() {
 
   let distKm = null;
   if (coords) distKm = distanceKm(coords.lat, coords.lon, origin.lat, origin.lon);
-  const driveMin = distKm != null ? Math.max(1, Math.round((distKm / AVG_SPEED_KMH) * 60)) : manualMin;
+
+  const hasRoute = route.status === 'success' && route.coords.length > 0;
+  // Prefer the real driving route's time/distance; fall back to the straight-line estimate.
+  const driveMin = hasRoute
+    ? route.durationMin
+    : distKm != null
+    ? Math.max(1, Math.round((distKm / AVG_SPEED_KMH) * 60))
+    : manualMin;
+  const displayDistKm = hasRoute ? route.distanceKm : distKm;
+
+  // Free public routing (OSRM demo server, no API key) for an actual road route,
+  // instead of a straight line between the two points.
+  const fetchRoute = useCallback(async (userCoords, terminal) => {
+    setRoute((prev) => ({ ...prev, status: 'loading' }));
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${userCoords.lon},${userCoords.lat};${terminal.lon},${terminal.lat}?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('routing unavailable');
+      const data = await res.json();
+      const r = data.routes && data.routes[0];
+      if (!r) throw new Error('no route found');
+      const latlngs = r.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+      setRoute({
+        status: 'success',
+        coords: latlngs,
+        distanceKm: r.distance / 1000,
+        durationMin: Math.max(1, Math.round(r.duration / 60)),
+      });
+    } catch (e) {
+      setRoute({ status: 'error', coords: [], distanceKm: null, durationMin: null });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (coords) {
+      fetchRoute(coords, origin);
+    } else {
+      setRoute({ status: 'idle', coords: [], distanceKm: null, durationMin: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coords, effectiveDirection]);
 
   // Calls a same-origin serverless endpoint (see api/next-ferry.js) instead of
   // Claude's built-in API proxy, which only exists inside Claude.ai artifacts.
@@ -307,7 +348,7 @@ export default function FerryTracker() {
         .ext-link { display:flex; align-items:center; gap:4px; color:#9DBFB9; font-size:11.5px; font-weight:700; text-decoration:none; width:fit-content; }
         .ext-link:hover { color:#F5EEDC; }
         .ext-link:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
-        .leaflet-container { background:#0B2B30 !important; font-family:'Manrope',system-ui,sans-serif; }
+        .leaflet-container { background:#DDD6C4 !important; font-family:'Manrope',system-ui,sans-serif; }
         .map-card { background:#123B41; border:1px solid rgba(245,238,220,0.1); border-radius:16px; padding:12px; margin-bottom:14px; }
         .map-wrap { height:180px; border-radius:12px; overflow:hidden; }
         .map-pin { position:relative; }
@@ -394,10 +435,10 @@ export default function FerryTracker() {
               <MapPin size={16} />
             </div>
             <div className="stat-label">Your distance</div>
-            {geoStatus === 'granted' && distKm != null ? (
+            {geoStatus === 'granted' && displayDistKm != null ? (
               <div className="stat-value">
-                {distKm < 1 ? `${Math.round(distKm * 1000)} m` : `${distKm.toFixed(1)} km`}
-                <div className="stat-unit">~{driveMin} min drive</div>
+                {displayDistKm < 1 ? `${Math.round(displayDistKm * 1000)} m` : `${displayDistKm.toFixed(1)} km`}
+                <div className="stat-unit">~{driveMin} min drive{!hasRoute ? ' (est.)' : ''}</div>
               </div>
             ) : geoStatus === 'locating' ? (
               <div className="stat-value dim">Locating…</div>
@@ -439,11 +480,20 @@ export default function FerryTracker() {
               attributionControl={false}
               style={{ height: '100%', width: '100%' }}
             >
-              <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+              <TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" />
+              {hasRoute && (
+                <Polyline positions={route.coords} pathOptions={{ color: '#E2703A', weight: 4, opacity: 0.9 }} />
+              )}
               <Marker position={[origin.lat, origin.lon]} icon={terminalIcon} />
               {coords && <Marker position={[coords.lat, coords.lon]} icon={userIcon} />}
               <MapBoundsUpdater
-                points={coords ? [[coords.lat, coords.lon], [origin.lat, origin.lon]] : [[origin.lat, origin.lon]]}
+                points={
+                  hasRoute
+                    ? route.coords
+                    : coords
+                    ? [[coords.lat, coords.lon], [origin.lat, origin.lon]]
+                    : [[origin.lat, origin.lon]]
+                }
               />
             </MapContainer>
           </div>
