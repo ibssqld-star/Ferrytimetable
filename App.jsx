@@ -39,6 +39,7 @@ function MapBoundsUpdater({ points }) {
 
 const AVG_SPEED_KMH = 32; // conservative local-road estimate
 const BOARD_BUFFER_MIN = 20; // SeaLink recommends arriving 20 min before departure
+const PARKING_BUFFER_MIN = 10; // time needed to park and walk in, on top of drive time
 const CROSSING_MIN = 30; // approx one-way passenger ferry crossing time (published guides put it ~20-33 min depending on direction)
 const PREFS_KEY = 'ferry-tracker:prefs';
 
@@ -268,6 +269,12 @@ export default function FerryTracker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveDirection, customTime]);
 
+  // Minimum lead time needed before a departure to actually be catchable:
+  // drive time plus 10 min to park and walk in. A sailing sooner than this
+  // isn't a real option, so it gets skipped in favour of the next one.
+  const minLeadMin = driveMin != null ? driveMin + PARKING_BUFFER_MIN : null;
+  const isCatchable = (d, refTime) => minLeadMin == null || (d.getTime() - refTime.getTime()) / 60000 >= minLeadMin;
+
   const usingFallback = live.status !== 'success';
   let displayDepartures = [];
   if (!usingFallback) {
@@ -289,15 +296,20 @@ export default function FerryTracker() {
     }
     displayDepartures = sched.slice(0, 4);
   }
+  // Drop any that are too soon to physically reach, so the app never suggests
+  // a sailing you can't actually make.
+  const catchableDepartures = displayDepartures.filter((d) => isCatchable(d, effectiveNow));
+  if (catchableDepartures.length) displayDepartures = catchableDepartures;
 
   // In "arrive by" mode, customTime is a deadline: find the latest departure
-  // that (departure + crossing estimate) still lands at or before it.
+  // that (departure + crossing estimate) still lands at or before it, and is
+  // still realistically reachable given drive + parking time.
   let arriveByDeparture = null;
   let arriveByArrival = null;
   let arriveByEarliestArrival = null; // fallback suggestion when nothing fits
   if (timeMode === 'arrive' && customTime) {
     const daySchedule = approxSchedule(new Date(customTime));
-    const reachable = daySchedule.filter((d) => d >= now);
+    const reachable = daySchedule.filter((d) => d >= now && isCatchable(d, now));
     const valid = reachable.filter((d) => d.getTime() + CROSSING_MIN * 60000 <= customTime.getTime());
     if (valid.length) {
       arriveByDeparture = valid[valid.length - 1];
@@ -306,6 +318,7 @@ export default function FerryTracker() {
       arriveByEarliestArrival = new Date(reachable[0].getTime() + CROSSING_MIN * 60000);
     }
   }
+
 
   const inArriveMode = timeMode === 'arrive' && !!customTime;
   const nextDep = inArriveMode ? arriveByDeparture : displayDepartures[0] || null;
@@ -354,6 +367,7 @@ export default function FerryTracker() {
         @keyframes boardIn { from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);} }
         @media (prefers-reduced-motion:reduce) { .board{animation:none;} }
         .hero-sub { margin-top:12px; font-size:13px; color:#C9DFDA; font-weight:600; }
+        .hero-caveat { margin-top:10px; font-size:10.5px; line-height:1.4; color:#7FA39D; padding-top:10px; border-top:1px solid rgba(245,238,220,0.08); }
         .stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }
         .stat-card { background:#123B41; border:1px solid rgba(245,238,220,0.1); border-radius:16px; padding:14px; min-height:96px; display:flex; flex-direction:column; gap:6px; }
         .stat-card.urgent { border-color:rgba(240,130,74,0.5); background:rgba(240,130,74,0.08); }
@@ -542,6 +556,12 @@ export default function FerryTracker() {
               'Checking schedule…'
             )}
           </div>
+          {inArriveMode && nextDep && (
+            <div className="hero-caveat">
+              Crossing time is a ~30 min estimate — some sailings run direct to {dest.name} (~20 min), others
+              loop via the other islands first (~50 min). Worth a live check for anything time-critical.
+            </div>
+          )}
         </section>
 
         <section className="stats">
