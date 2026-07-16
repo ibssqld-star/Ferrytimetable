@@ -1,11 +1,41 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Anchor, MapPin, Clock, RefreshCw, ExternalLink, Navigation, AlertTriangle } from 'lucide-react';
+import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 // ---- Terminal locations ----
 const TERMINALS = {
   russell: { key: 'russell', name: 'Russell Island', full: 'Russell Island ferry terminal', lat: -27.645961, lon: 153.38233 },
   redland: { key: 'redland', name: 'Redland Bay', full: 'Redland Bay Marina', lat: -27.6180125, lon: 153.3115356 },
 };
+
+const userIcon = L.divIcon({
+  className: '',
+  html: '<div class="map-pin map-pin-user"><span></span></div>',
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+});
+const terminalIcon = L.divIcon({
+  className: '',
+  html: '<div class="map-pin map-pin-terminal"></div>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
+
+// Fits the map view to whichever marker(s) are present whenever they change.
+function MapBoundsUpdater({ points }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!points.length) return;
+    if (points.length === 1) {
+      map.setView(points[0], 14);
+    } else {
+      map.fitBounds(points, { padding: [32, 32], maxZoom: 15 });
+    }
+  }, [map, points]);
+  return null;
+}
 
 const AVG_SPEED_KMH = 32; // conservative local-road estimate
 const BOARD_BUFFER_MIN = 20; // SeaLink recommends arriving 20 min before departure
@@ -277,6 +307,21 @@ export default function FerryTracker() {
         .ext-link { display:flex; align-items:center; gap:4px; color:#9DBFB9; font-size:11.5px; font-weight:700; text-decoration:none; width:fit-content; }
         .ext-link:hover { color:#F5EEDC; }
         .ext-link:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
+        .leaflet-container { background:#0B2B30 !important; font-family:'Manrope',system-ui,sans-serif; }
+        .map-card { background:#123B41; border:1px solid rgba(245,238,220,0.1); border-radius:16px; padding:12px; margin-bottom:14px; }
+        .map-wrap { height:180px; border-radius:12px; overflow:hidden; }
+        .map-pin { position:relative; }
+        .map-pin-user { width:14px; height:14px; border-radius:50%; background:#6FE3A6; border:2px solid #0B2B30; box-shadow:0 0 0 4px rgba(111,227,166,0.28); }
+        .map-pin-user span { position:absolute; inset:-6px; border-radius:50%; border:1.5px solid rgba(111,227,166,0.55); animation:pulseRing 2.2s ease-out infinite; }
+        @keyframes pulseRing { 0%{transform:scale(0.6); opacity:0.9;} 100%{transform:scale(1.9); opacity:0;} }
+        @media (prefers-reduced-motion:reduce) { .map-pin-user span { animation:none; } }
+        .map-pin-terminal { width:12px; height:12px; border-radius:3px; background:#F0824A; border:2px solid #0B2B30; transform:rotate(45deg); }
+        .map-legend { display:flex; align-items:center; gap:14px; margin-top:9px; flex-wrap:wrap; padding:0 2px; }
+        .legend-item { display:flex; align-items:center; gap:5px; font-size:10.5px; font-weight:700; color:#9DBFB9; }
+        .legend-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+        .legend-dot-user { background:#6FE3A6; }
+        .legend-dot-terminal { background:#F0824A; border-radius:2px; transform:rotate(45deg); }
+        .map-attribution { font-size:9px; color:#5C7C77; margin-left:auto; }
       `}</style>
 
       <div className="wrap">
@@ -381,6 +426,37 @@ export default function FerryTracker() {
             <div className="stat-label">Leave by</div>
             <div className="stat-value big">{leaveBy ? (leaveByPast ? 'Now' : fmtTime(leaveBy)) : '—'}</div>
             {driveMin == null && <div className="stat-hint">Set your distance ←</div>}
+          </div>
+        </section>
+
+        <section className="map-card">
+          <div className="map-wrap">
+            <MapContainer
+              center={coords ? [coords.lat, coords.lon] : [origin.lat, origin.lon]}
+              zoom={13}
+              scrollWheelZoom={false}
+              zoomControl={false}
+              attributionControl={false}
+              style={{ height: '100%', width: '100%' }}
+            >
+              <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+              <Marker position={[origin.lat, origin.lon]} icon={terminalIcon} />
+              {coords && <Marker position={[coords.lat, coords.lon]} icon={userIcon} />}
+              <MapBoundsUpdater
+                points={coords ? [[coords.lat, coords.lon], [origin.lat, origin.lon]] : [[origin.lat, origin.lon]]}
+              />
+            </MapContainer>
+          </div>
+          <div className="map-legend">
+            {coords && (
+              <span className="legend-item">
+                <span className="legend-dot legend-dot-user" /> You
+              </span>
+            )}
+            <span className="legend-item">
+              <span className="legend-dot legend-dot-terminal" /> {origin.name}
+            </span>
+            <span className="map-attribution">© OpenStreetMap, © CARTO</span>
           </div>
         </section>
 
