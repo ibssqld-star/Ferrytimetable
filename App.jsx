@@ -39,6 +39,7 @@ function MapBoundsUpdater({ points }) {
 
 const AVG_SPEED_KMH = 32; // conservative local-road estimate
 const BOARD_BUFFER_MIN = 20; // SeaLink recommends arriving 20 min before departure
+const CROSSING_MIN = 30; // approx one-way passenger ferry crossing time (published guides put it ~20-33 min depending on direction)
 const PREFS_KEY = 'ferry-tracker:prefs';
 
 // ---- Helpers ----
@@ -126,6 +127,7 @@ export default function FerryTracker() {
   const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [route, setRoute] = useState({ status: 'idle', coords: [], distanceKm: null, durationMin: null });
   const [customTime, setCustomTime] = useState(null); // null = live "now"; otherwise a chosen planning Date
+  const [timeMode, setTimeMode] = useState('leave'); // 'leave' = customTime is a departure reference, 'arrive' = customTime is a desired arrival deadline
   const [showTimePicker, setShowTimePicker] = useState(false);
 
   const effectiveDirection = direction || autoDirection;
@@ -288,8 +290,27 @@ export default function FerryTracker() {
     displayDepartures = sched.slice(0, 4);
   }
 
-  const nextDep = displayDepartures[0] || null;
-  const minsUntilNext = nextDep ? Math.round((nextDep - effectiveNow) / 60000) : null;
+  // In "arrive by" mode, customTime is a deadline: find the latest departure
+  // that (departure + crossing estimate) still lands at or before it.
+  let arriveByDeparture = null;
+  let arriveByArrival = null;
+  let arriveByEarliestArrival = null; // fallback suggestion when nothing fits
+  if (timeMode === 'arrive' && customTime) {
+    const daySchedule = approxSchedule(new Date(customTime));
+    const reachable = daySchedule.filter((d) => d >= now);
+    const valid = reachable.filter((d) => d.getTime() + CROSSING_MIN * 60000 <= customTime.getTime());
+    if (valid.length) {
+      arriveByDeparture = valid[valid.length - 1];
+      arriveByArrival = new Date(arriveByDeparture.getTime() + CROSSING_MIN * 60000);
+    } else if (reachable.length) {
+      arriveByEarliestArrival = new Date(reachable[0].getTime() + CROSSING_MIN * 60000);
+    }
+  }
+
+  const inArriveMode = timeMode === 'arrive' && !!customTime;
+  const nextDep = inArriveMode ? arriveByDeparture : displayDepartures[0] || null;
+  const countdownRef = inArriveMode ? now : effectiveNow;
+  const minsUntilNext = nextDep ? Math.round((nextDep - countdownRef) / 60000) : null;
   const leaveBy =
     nextDep && driveMin != null ? new Date(nextDep.getTime() - (driveMin + BOARD_BUFFER_MIN) * 60000) : null;
   const leaveByPast = leaveBy && leaveBy <= now;
@@ -310,9 +331,13 @@ export default function FerryTracker() {
         .locate-btn:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
         .direction-toggle { display:flex; gap:6px; margin-bottom:14px; background:rgba(245,238,220,0.06); padding:4px; border-radius:12px; }
         .time-row { display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
-        .time-chip { display:flex; align-items:center; gap:5px; background:rgba(245,238,220,0.07); border:1px solid rgba(245,238,220,0.14); color:#9DBFB9; font-family:inherit; font-size:11.5px; font-weight:700; padding:6px 10px; border-radius:99px; cursor:pointer; }
-        .time-chip.active { background:rgba(240,130,74,0.14); border-color:rgba(240,130,74,0.4); color:#F0824A; }
-        .time-chip:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
+        .time-mode-tabs { display:flex; gap:6px; margin-bottom:8px; }
+        .mode-tab { border:none; background:rgba(245,238,220,0.06); color:#9DBFB9; font-family:inherit; font-size:11px; font-weight:700; padding:6px 12px; border-radius:99px; cursor:pointer; }
+        .mode-tab.active { background:rgba(111,227,166,0.16); color:#6FE3A6; }
+        .mode-tab:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
+        .plan-time-chip { display:flex; align-items:center; gap:5px; background:rgba(245,238,220,0.07); border:1px solid rgba(245,238,220,0.14); color:#9DBFB9; font-family:inherit; font-size:11.5px; font-weight:700; padding:6px 10px; border-radius:99px; cursor:pointer; }
+        .plan-time-chip.active { background:rgba(240,130,74,0.14); border-color:rgba(240,130,74,0.4); color:#F0824A; }
+        .plan-time-chip:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
         .time-input { background:#0B2B30; border:1px solid rgba(245,238,220,0.2); color:#F5EEDC; font-family:inherit; font-size:12px; font-weight:600; padding:6px 8px; border-radius:8px; }
         .time-input:focus-visible { outline:2px solid #6FE3A6; outline-offset:2px; }
         .dir-btn { flex:1; border:none; background:transparent; color:#9DBFB9; font-family:inherit; font-size:12px; font-weight:700; padding:9px 4px; border-radius:9px; cursor:pointer; }
@@ -422,8 +447,26 @@ export default function FerryTracker() {
           </button>
         </div>
 
+        <div className="time-mode-tabs">
+          <button
+            className={`mode-tab ${timeMode === 'leave' ? 'active' : ''}`}
+            onClick={() => setTimeMode('leave')}
+          >
+            Leave at…
+          </button>
+          <button
+            className={`mode-tab ${timeMode === 'arrive' ? 'active' : ''}`}
+            onClick={() => setTimeMode('arrive')}
+          >
+            Arrive by…
+          </button>
+        </div>
+
         <div className="time-row">
-          <button className={`time-chip ${customTime ? 'active' : ''}`} onClick={() => setShowTimePicker((v) => !v)}>
+          <button
+            className={`plan-time-chip ${customTime ? 'active' : ''}`}
+            onClick={() => setShowTimePicker((v) => !v)}
+          >
             <Clock size={12} />
             {customTime
               ? customTime.toLocaleString('en-AU', {
@@ -432,6 +475,8 @@ export default function FerryTracker() {
                   minute: '2-digit',
                   hour12: true,
                 })
+              : timeMode === 'arrive'
+              ? 'Pick an arrival time'
               : 'Planning for now'}
           </button>
           {customTime && (
@@ -442,7 +487,7 @@ export default function FerryTracker() {
                 setShowTimePicker(false);
               }}
             >
-              back to now
+              reset
             </button>
           )}
           {showTimePicker && (
@@ -464,16 +509,32 @@ export default function FerryTracker() {
 
         <section className="hero" aria-live="polite">
           <div className="hero-label">
-            <span>NEXT SAILING</span>
-            {live.status === 'success' && <span className="badge live">Live</span>}
-            {live.status === 'loading' && <span className="badge checking">Checking…</span>}
-            {(live.status === 'idle' || live.status === 'error') && <span className="badge approx">Approx.</span>}
+            <span>{inArriveMode ? 'CATCH THIS SAILING' : 'NEXT SAILING'}</span>
+            {inArriveMode ? (
+              <span className="badge approx">Estimate</span>
+            ) : live.status === 'success' ? (
+              <span className="badge live">Live</span>
+            ) : live.status === 'loading' ? (
+              <span className="badge checking">Checking…</span>
+            ) : (
+              <span className="badge approx">Approx.</span>
+            )}
           </div>
           <div className="board" key={nextDep ? nextDep.toISOString() : 'none'}>
             {nextDep ? fmtTime(nextDep) : '—'}
           </div>
           <div className="hero-sub">
-            {nextDep ? (
+            {inArriveMode && !nextDep ? (
+              arriveByEarliestArrival ? (
+                <>No sailing today gets you there by then — earliest possible arrival is ~{fmtTime(arriveByEarliestArrival)}</>
+              ) : (
+                'No sailings left for that day'
+              )
+            ) : nextDep && inArriveMode ? (
+              <>
+                arrives ~{fmtTime(arriveByArrival)} · {origin.name} → {dest.name}
+              </>
+            ) : nextDep ? (
               <>
                 in {fmtMinsUntil(minsUntilNext)} · {origin.name} → {dest.name}
               </>
@@ -564,16 +625,18 @@ export default function FerryTracker() {
           </div>
         </section>
 
-        <section className="upcoming">
-          <div className="section-label">Coming up</div>
-          <div className="chip-row">
-            {displayDepartures.slice(1, 4).map((d, i) => (
-              <span key={i} className="time-chip">
-                {fmtTime(d)}
-              </span>
-            ))}
-          </div>
-        </section>
+        {!inArriveMode && (
+          <section className="upcoming">
+            <div className="section-label">Coming up</div>
+            <div className="chip-row">
+              {displayDepartures.slice(1, 4).map((d, i) => (
+                <span key={i} className="time-chip">
+                  {fmtTime(d)}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
 
         <footer className="footer">
           {usingFallback && (
